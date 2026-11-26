@@ -3,6 +3,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <map>
 #include "Analysis.h"
+#include "Detect.h"
 #include "Presets.h"
 
 struct Item
@@ -32,10 +33,10 @@ public:
 
     void loadCache()
     {
-        if (auto xml = juce::XmlDocument::parse (dataFolder().getChildFile ("cache.xml")))
+        auto xml = juce::XmlDocument::parse (dataFolder().getChildFile ("cache.xml"));
+        if (xml != nullptr && xml->getIntAttribute ("engine") == engineVersion) // else analyse again
             for (auto* e : xml->getChildIterator())
             {
-                if (! e->hasAttribute ("tuning")) continue; // older cache entry: analyse again
                 Item it;
                 it.file = juce::File (e->getStringAttribute ("path"));
                 it.name = e->getStringAttribute ("name");
@@ -73,11 +74,13 @@ public:
     bool isScanning() const { return isThreadRunning(); }
 
 private:
+    static constexpr int engineVersion = 2; // bump when detection changes
     struct Cached { juce::String stamp; Item item; };
 
     void saveCache() const
     {
         juce::XmlElement xml ("cache");
+        xml.setAttribute ("engine", engineVersion);
         for (auto& [path, c] : cache)
         {
             auto* e = xml.createNewChildElement ("file");
@@ -154,8 +157,8 @@ private:
                    << "Channels: " << (int) reader->numChannels << "\n"
                    << "Bit depth: " << (int) reader->bitsPerSample << "\n";
 
-        // Analyse at most the first 30 seconds, mixed to mono.
-        const int n = (int) juce::jmin (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 30.0));
+        // Analyse at most two minutes, mixed to mono. Tuning only needs 30 seconds.
+        const int n = (int) juce::jmin (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 120.0));
         if (n <= 0) return it;
         juce::AudioBuffer<float> buffer (juce::jmin (2, (int) reader->numChannels), n);
         reader->read (&buffer, 0, n, 0, true, true);
@@ -165,20 +168,21 @@ private:
             buffer.applyGain (0, 0, n, 0.5f);
         }
         auto* mono = buffer.getReadPointer (0);
+        if (it.tuning <= 0) // tuning first: the key detector uses it
+        {
+            it.tuning = analysis::detectTuning (mono, juce::jmin (n, (int) (reader->sampleRate * 30.0)),
+                                                reader->sampleRate);
+            it.tuningGuessed = it.tuning > 0;
+        }
         if (it.bpm <= 0)
         {
-            it.bpm = analysis::detectBpm (mono, n, reader->sampleRate);
+            it.bpm = detect::bpm (mono, n, reader->sampleRate);
             it.bpmGuessed = it.bpm > 0;
         }
         if (it.key < 0 && it.seconds >= 1.0) // short one-shots rarely have a key
         {
-            it.key = analysis::detectKey (mono, n, reader->sampleRate);
+            it.key = detect::key (mono, n, reader->sampleRate, it.tuning);
             it.keyGuessed = it.key >= 0;
-        }
-        if (it.tuning <= 0)
-        {
-            it.tuning = analysis::detectTuning (mono, n, reader->sampleRate);
-            it.tuningGuessed = it.tuning > 0;
         }
         return it;
     }

@@ -118,6 +118,24 @@ public:
         bevel (g, { 0, 0, w, h }, false);
     }
 
+    // Folder tree: dotted-era +/- boxes with connecting lines.
+    bool areLinesDrawnForTreeView (juce::TreeView&) override { return true; }
+    int getTreeViewIndentSize (juce::TreeView&) override { return 18; }
+
+    void drawTreeviewPlusMinusBox (juce::Graphics& g, const juce::Rectangle<float>& area, juce::Colour,
+                                   bool isOpen, bool) override
+    {
+        const juce::Rectangle<int> box (juce::roundToInt (area.getCentreX()) - 4,
+                                        juce::roundToInt (area.getCentreY()) - 4, 9, 9);
+        g.setColour (white);
+        g.fillRect (box);
+        g.setColour (shadow);
+        g.drawRect (box);
+        g.setColour (dark);
+        g.fillRect (box.getX() + 2, box.getY() + 4, 5, 1);
+        if (! isOpen) g.fillRect (box.getX() + 4, box.getY() + 2, 1, 5);
+    }
+
     int getDefaultScrollbarWidth() override { return 16; }
     int getMinimumScrollbarThumbSize (juce::ScrollBar&) override { return 16; }
     bool areScrollbarButtonsVisible() override { return true; }

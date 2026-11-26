@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstring>
 #include "../Source/Library.h"
+#include "../Source/Detect.h"
 
 static int failures = 0;
 static void check (bool ok, const char* what)
@@ -52,6 +53,33 @@ int main()
     check (detectBpm (c.data(), (int) c.size(), sr) == 0, "bpm: sustained chord left blank");
     check (detectBpm (am.data(), (int) am.size(), sr) == 0, "bpm: sustained minor chord left blank");
 
+    check (detect::key (c.data(), (int) c.size(), sr, 440.0) == 0, "qm key: C major triad");
+    check (detect::key (am.data(), (int) am.size(), sr, 440.0) == 21, "qm key: A minor triad");
+    check (detect::key (tone.data(), (int) tone.size(), sr, 440.0) == -1, "qm key: single tone left blank");
+    {
+        auto low = chord ({ 261.63 * 432 / 440, 329.63 * 432 / 440, 392.00 * 432 / 440 });
+        check (detect::key (low.data(), (int) low.size(), sr, 432.0) == 0, "qm key: C major tuned to 432");
+    }
+    for (double bpm : { 90.0, 128.0, 150.0 }) // 45 s: the long-material path
+    {
+        std::vector<float> x ((size_t) (sr * 45), 0.0f);
+        juce::Random random (1);
+        for (double start = 0; start < (double) x.size(); start += sr * 60.0 / bpm)
+            for (int i = 0; i < 2000 && (size_t) start + (size_t) i < x.size(); ++i)
+                x[(size_t) start + (size_t) i] = (random.nextFloat() * 2 - 1) * std::exp (-i / 300.0f);
+        const double got = detect::qmBpm (x.data(), (int) x.size(), sr);
+        std::printf ("      QM click track %.0f -> %.2f\n", bpm, got);
+        check (std::abs (got - bpm) <= 1.5, "qm bpm: long click track");
+        check (std::abs (detect::bpm (x.data(), (int) x.size(), sr) - bpm) <= 1.5, "bpm: long file");
+    }
+
+    {
+        std::vector<float> hits ((size_t) (sr * 4));
+        juce::Random random (3);
+        for (size_t i = 0; i < hits.size(); ++i)
+            hits[i] = (random.nextFloat() - 0.5f) * std::exp (-(float) (i % 11025) / 1500.0f);
+        check (detect::key (hits.data(), (int) hits.size(), sr, 440.0) == -1, "qm key: noise hits left blank");
+    }
     check (tuningFromName ("pad_432Hz") == 432, "tuning: from name");
     check (tuningFromName ("pad 440 Hz") == 440, "tuning: separate unit");
     check (tuningFromName ("sub_100hz") == 0, "tuning: other frequencies ignored");

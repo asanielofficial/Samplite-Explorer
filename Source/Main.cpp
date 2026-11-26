@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <set>
 #include "ClassicLook.h"
+#include "FolderTree.h"
 #include "Library.h"
 
 using classic::bevel;
@@ -85,22 +86,6 @@ class MainComponent : public juce::Component,
     enum Column { nameCol = 1, typeCol, lengthCol, bpmCol, keyCol, tuningCol, folderCol };
     enum Command { addCmd = 1, removeCmd, rescanCmd, quitCmd, autoCmd, loopCmd, aboutCmd };
 
-    struct Folders : public juce::ListBoxModel
-    {
-        explicit Folders (MainComponent& o) : owner (o) {}
-        int getNumRows() override { return owner.roots.size() + 1; }
-        void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool selected) override
-        {
-            if (selected) g.fillAll (classic::navy);
-            g.setColour (selected ? classic::white : classic::dark);
-            g.setFont (classic::font());
-            g.drawText (row == 0 ? juce::String ("(All folders)") : owner.roots[row - 1].getFileName(),
-                        6, 0, w - 8, h, juce::Justification::centredLeft);
-        }
-        void selectedRowsChanged (int) override { owner.applyFilter(); }
-        MainComponent& owner;
-    };
-
 public:
     explicit MainComponent (const juce::StringArray& args)
     {
@@ -114,7 +99,7 @@ public:
         readAhead.startThread();
 
         for (auto* c : std::initializer_list<juce::Component*> { &menu, &addButton, &search, &typeBox, &keyBox,
-                 &bpmMin, &bpmMax, &folderList, &table, &preview, &playButton, &stopButton, &autoPlay,
+                 &bpmMin, &bpmMax, &folderTree, &table, &preview, &playButton, &stopButton, &autoPlay,
                  &loop, &volume, &searchLabel, &bpmLabel, &toLabel, &status })
             addAndMakeVisible (c);
 
@@ -160,11 +145,13 @@ public:
         table.setHeaderHeight (20);
         table.setOutlineThickness (2);
         table.setColour (juce::ListBox::outlineColourId, juce::Colours::transparentBlack);
-        folderList.setColour (juce::ListBox::outlineColourId, juce::Colours::transparentBlack);
-        folderList.setRowHeight (18);
-        folderList.setOutlineThickness (2);
-        for (auto* l : { &table.getViewport()->getVerticalScrollBar(), &folderList.getVerticalScrollBar() })
-            l->setAutoHide (false);
+        table.getViewport()->getVerticalScrollBar().setAutoHide (false);
+        folderState.onSelect = [this] { applyFilter(); };
+        folderTree.setColour (juce::TreeView::backgroundColourId, classic::white);
+        folderTree.setColour (juce::TreeView::linesColourId, classic::shadow);
+        folderTree.setDefaultOpenness (false);
+        folderTree.setRootItem (&allFolders);
+        allFolders.setOpen (true);
         for (auto* l : { &searchLabel, &bpmLabel, &toLabel, &status }) l->setFont (classic::font());
         // Keep Space for play/stop rather than clicking whichever button was used last.
         for (auto* b : std::initializer_list<juce::Component*> { &addButton, &playButton, &stopButton, &autoPlay, &loop })
@@ -177,8 +164,6 @@ public:
         for (auto& path : saved)
             if (juce::File::isAbsolutePath (path) && juce::File (path).isDirectory())
                 roots.addIfNotAlreadyThere (juce::File (path));
-        folderList.updateContent();
-        folderList.selectRow (0);
         rescan();
 
         setSize (900, 600);
@@ -192,6 +177,7 @@ public:
         settings->setValue ("volume", volume.getValue());
         settings->saveIfNeeded();
         menu.setModel (nullptr);
+        folderTree.setRootItem (nullptr);
         transport.setSource (nullptr);
         player.setSource (nullptr);
         deviceManager.removeAudioCallback (&player);
@@ -211,7 +197,7 @@ public:
     void paintOverChildren (juce::Graphics& g) override
     {
         bevel (g, table.getBounds(), true);
-        bevel (g, folderList.getBounds(), true);
+        bevel (g, folderTree.getBounds().expanded (2), true);
     }
 
     void resized() override
@@ -244,7 +230,7 @@ public:
         loop.setBounds (transportRow.removeFromLeft (70));
         volume.setBounds (transportRow.removeFromRight (140));
         preview.setBounds (r.removeFromBottom (130).withTrimmedTop (5));
-        folderList.setBounds (r.removeFromLeft (170));
+        folderTree.setBounds (r.removeFromLeft (190).reduced (2));
         r.removeFromLeft (5);
         table.setBounds (r);
     }
@@ -367,8 +353,7 @@ private:
 
     bool matches (const Item& it) const
     {
-        const int folder = folderList.getSelectedRow();
-        if (folder > 0 && ! it.file.isAChildOf (roots[folder - 1])) return false;
+        if (folderState.selected != juce::File() && ! it.file.isAChildOf (folderState.selected)) return false;
 
         switch (typeBox.getSelectedId())
         {
@@ -441,7 +426,11 @@ private:
         if (! found.empty())
         {
             for (auto& it : found)
-                if (seen.insert (it.file.getFullPathName()).second) items.push_back (std::move (it));
+                if (seen.insert (it.file.getFullPathName()).second)
+                {
+                    addToTree (it.file);
+                    items.push_back (std::move (it));
+                }
             applyFilter();
         }
         else if (scanning != wasScanning) updateStatus();
@@ -454,8 +443,20 @@ private:
         items.clear();
         visible.clear();
         seen.clear();
+        allFolders.clearSubItems();
+        for (auto& root : roots) allFolders.child (root, true, false);
+        if (folderState.selected == juce::File())
+            allFolders.setSelected (true, true, juce::dontSendNotification);
         library.scan (roots);
         applyFilter();
+    }
+
+    // Only folders that hold sounds or presets (or lead to some) appear in the tree.
+    void addToTree (const juce::File& file)
+    {
+        for (auto& root : roots)
+            if (file.isAChildOf (root))
+                allFolders.child (root, true, false).addPath (file.getParentDirectory());
     }
 
     void foldersChanged()
@@ -464,9 +465,7 @@ private:
         for (auto& f : roots) paths.add (f.getFullPathName());
         settings->setValue ("folders", paths.joinIntoString ("\n"));
         settings->saveIfNeeded();
-        folderList.updateContent();
-        folderList.selectRow (0);
-        folderList.repaint();
+        folderState.selected = juce::File();
         rescan();
     }
 
@@ -492,7 +491,7 @@ private:
         if (index == 0)
         {
             m.addItem (addCmd, "Add Folder...");
-            m.addItem (removeCmd, "Remove Selected Folder", folderList.getSelectedRow() > 0);
+            m.addItem (removeCmd, "Remove Selected Folder", roots.contains (folderState.selected));
             m.addItem (rescanCmd, "Rescan");
             m.addSeparator();
             m.addItem (quitCmd, "Exit");
@@ -509,9 +508,9 @@ private:
     void menuItemSelected (int command, int) override
     {
         if (command == addCmd) chooseFolder();
-        else if (command == removeCmd && folderList.getSelectedRow() > 0)
+        else if (command == removeCmd && roots.contains (folderState.selected))
         {
-            roots.remove (folderList.getSelectedRow() - 1); // removes from the list only
+            roots.removeFirstMatchingValue (folderState.selected); // removes from the list only
             foldersChanged();
         }
         else if (command == rescanCmd) rescan();
@@ -521,7 +520,7 @@ private:
         else if (command == aboutCmd)
             juce::AlertWindow::showAsync (juce::MessageBoxOptions()
                                               .withTitle ("About")
-                                              .withMessage ("Samplite Explorer 1.0\n\n~ marks an estimated BPM, key or tuning.")
+                                              .withMessage ("Samplite Explorer " APP_VERSION "\n\n~ marks an estimated BPM, key or tuning.")
                                               .withButton ("OK"), nullptr);
     }
 
@@ -549,8 +548,9 @@ private:
     juce::Label searchLabel { {}, "Search:" }, bpmLabel { {}, "BPM:" }, toLabel { {}, "to" }, status;
     juce::ToggleButton autoPlay { "Auto-preview" }, loop { "Loop" };
     juce::Slider volume;
-    Folders folderModel { *this };
-    juce::ListBox folderList { {}, &folderModel };
+    FolderState folderState;
+    FolderNode allFolders { folderState, juce::File() };
+    juce::TreeView folderTree;
     juce::TableListBox table;
     Preview preview { library.formats, transport };
 };
@@ -576,7 +576,7 @@ class App : public juce::JUCEApplication
 
 public:
     const juce::String getApplicationName() override { return "Samplite Explorer"; }
-    const juce::String getApplicationVersion() override { return "1.0.0"; }
+    const juce::String getApplicationVersion() override { return APP_VERSION; }
 
     void initialise (const juce::String&) override
     {

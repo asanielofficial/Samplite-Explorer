@@ -127,6 +127,37 @@ inline double detectBpm (const float* x, int n, double sr)
     return bestRaw / energy > 0.1 ? std::round (bestBpm) : 0;
 }
 
+// Share of 55-2000 Hz energy held in narrow spectral peaks: near 1 for pitched
+// material, near 0 for drums and noise.
+inline double tonalness (const float* x, int n, double sr)
+{
+    const int order = 14, size = 1 << order;
+    juce::dsp::FFT fft (order);
+    juce::dsp::WindowingFunction<float> window ((size_t) size, juce::dsp::WindowingFunction<float>::hann, false);
+    std::vector<float> buf ((size_t) size * 2), nearby;
+    const int lo = (int) (55.0 * size / sr), hi = std::min (size / 2 - 40, (int) (2000.0 * size / sr));
+    double inPeaks = 0, total = 0;
+    for (int start = 0; start == 0 || start < n - size / 4; start += size / 2)
+    {
+        std::fill (buf.begin(), buf.end(), 0.0f);
+        std::copy (x + start, x + std::min (n, start + size), buf.begin());
+        window.multiplyWithWindowingTable (buf.data(), (size_t) size);
+        fft.performFrequencyOnlyForwardTransform (buf.data());
+        for (int k = 0; k < size / 2; ++k) buf[(size_t) k] *= buf[(size_t) k]; // power
+        for (int k = lo; k < hi; ++k)
+        {
+            total += buf[(size_t) k];
+            const float p = buf[(size_t) k];
+            if (k < 2 || p <= buf[(size_t) k - 1] || p < buf[(size_t) k + 1]) continue;
+            nearby.assign (buf.begin() + std::max (0, k - 30), buf.begin() + k + 30);
+            std::nth_element (nearby.begin(), nearby.begin() + (long) nearby.size() / 2, nearby.end());
+            if (p > 8.0f * nearby[nearby.size() / 2])
+                for (int j = k - 2; j <= k + 2; ++j) inPeaks += buf[(size_t) j];
+        }
+    }
+    return total > 0 ? std::min (1.0, inPeaks / total) : 0.0;
+}
+
 // Chroma vector matched against Krumhansl key profiles. Returns -1 if unclear.
 inline int detectKey (const float* x, int n, double sr)
 {
