@@ -136,6 +136,22 @@ public:
         if (! isOpen) g.fillRect (box.getX() + 4, box.getY() + 2, 1, 5);
     }
 
+    // Dialog boxes: grey face, raised edge, navy caption.
+    void drawAlertBox (juce::Graphics& g, juce::AlertWindow& window, const juce::Rectangle<int>& textArea,
+                       juce::TextLayout& layout) override
+    {
+        g.fillAll (face);
+        bevel (g, window.getLocalBounds(), false);
+        g.setColour (navy);
+        g.fillRect (3, 3, window.getWidth() - 6, 5);
+        layout.draw (g, textArea.toFloat());
+    }
+
+    juce::Font getAlertWindowTitleFont() override { return font (true); }
+    juce::Font getAlertWindowMessageFont() override { return font(); }
+    juce::Font getAlertWindowFont() override { return font(); }
+    int getAlertWindowButtonHeight() override { return 24; }
+
     int getDefaultScrollbarWidth() override { return 16; }
     int getMinimumScrollbarThumbSize (juce::ScrollBar&) override { return 16; }
     bool areScrollbarButtonsVisible() override { return true; }

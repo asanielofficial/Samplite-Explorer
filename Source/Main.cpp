@@ -3,6 +3,8 @@
 #include <set>
 #include "ClassicLook.h"
 #include "FolderTree.h"
+#include "FileTable.h"
+#include "FileActions.h"
 #include "Library.h"
 
 using classic::bevel;
@@ -141,6 +143,8 @@ public:
         for (auto& [title, width] : columns) header.addColumn (title, id++, width, 40);
         header.setSortColumnId (nameCol, true);
         table.setModel (this);
+        table.onCursorMoved = [this] (int row) { previewRow (row); };
+        table.onRename = [this] { renameSelected(); };
         table.setRowHeight (18);
         table.setHeaderHeight (20);
         table.setOutlineThickness (2);
@@ -313,17 +317,207 @@ private:
     void sortOrderChanged (int, bool) override { applyFilter(); }
     void selectedRowsChanged (int row) override
     {
-        if (refreshing || ! juce::isPositiveAndBelow (row, (int) visible.size())) return;
+        if (refreshing || juce::ModifierKeys::currentModifiers.isPopupMenu()) return;
+        if (table.isRowSelected (row)) previewRow (row); // not when Ctrl just deselected it
+    }
+
+    void previewRow (int row)
+    {
+        if (! juce::isPositiveAndBelow (row, (int) visible.size())) return;
         load (items[visible[(size_t) row]]);
         if (autoPlay.getToggleState()) play();
     }
 
-    void cellClicked (int row, int, const juce::MouseEvent&) override
+    void cellClicked (int row, int, const juce::MouseEvent& e) override
     {
+        table.rowClicked (row, e.mods);
+        if (e.mods.isPopupMenu()) { showFileMenu(); return; }
+        if (e.mods.isShiftDown() || e.mods.isCommandDown()) return;
         // Clicking the already selected sample plays it again.
         if (juce::isPositiveAndBelow (row, (int) visible.size())
              && items[visible[(size_t) row]].file == loaded && autoPlay.getToggleState())
             play();
+    }
+
+    void returnKeyPressed (int) override { openSelected(); }
+    void deleteKeyPressed (int) override { confirmDelete(); }
+
+    juce::Array<juce::File> selectedFiles() const
+    {
+        juce::Array<juce::File> files;
+        const auto rows = table.getSelectedRows();
+        for (int i = 0; i < rows.size(); ++i)
+            if (juce::isPositiveAndBelow (rows[i], (int) visible.size()))
+                files.add (items[visible[(size_t) rows[i]]].file);
+        return files;
+    }
+
+    void showFileMenu()
+    {
+        const int count = selectedFiles().size();
+        if (count == 0) return;
+        juce::PopupMenu m;
+        m.addItem (1, "Open", count <= 15);
+        m.addItem (2, "Open Containing Folder");
+        m.addSeparator();
+        m.addItem (3, "Rename...", count == 1);
+        m.addItem (4, count == 1 ? juce::String ("Delete...") : "Delete " + juce::String (count) + " Files...");
+        m.showMenuAsync (juce::PopupMenu::Options(),
+                         [safe = juce::Component::SafePointer<MainComponent> (this)] (int choice)
+                         {
+                             if (safe == nullptr) return;
+                             if (choice == 1) safe->openSelected();
+                             else if (choice == 2) safe->revealSelected();
+                             else if (choice == 3) safe->renameSelected();
+                             else if (choice == 4) safe->confirmDelete();
+                         });
+    }
+
+    // Opens each file in whatever application the system associates with it.
+    void openSelected()
+    {
+        const auto files = selectedFiles();
+        if (files.size() > 15) return;
+        juce::StringArray failed;
+        for (auto& f : files)
+            if (! f.startAsProcess()) failed.add (f.getFileName());
+        if (! failed.isEmpty())
+            warn ("Open", "No application could open:\n" + failed.joinIntoString ("\n"));
+    }
+
+    void revealSelected()
+    {
+        juce::StringArray done; // one window per folder, at most five
+        for (auto& f : selectedFiles())
+            if (done.size() < 5 && done.addIfNotAlreadyThere (f.getParentDirectory().getFullPathName()))
+                f.revealToUser();
+    }
+
+    void warn (const juce::String& title, const juce::String& message)
+    {
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withTitle (title).withMessage (message)
+                                          .withButton ("OK").withAssociatedComponent (this), nullptr);
+    }
+
+    // Closes the previewed file so the system will let us rename or delete it.
+    void releasePreview()
+    {
+        transport.stop();
+        transport.setSource (nullptr);
+        source.reset();
+        loaded = juce::File();
+        preview.show (nullptr);
+    }
+
+    void forget (const juce::File& file)
+    {
+        {
+            const juce::ScopedValueSetter<bool> guard (refreshing, true);
+            table.deselectAllRows(); // row numbers are about to change
+            visible.clear();
+        }
+        seen.erase (file.getFullPathName());
+        items.erase (std::remove_if (items.begin(), items.end(),
+                                     [&file] (const Item& it) { return it.file.getFullPathName() == file.getFullPathName(); }),
+                     items.end());
+    }
+
+    void renameSelected()
+    {
+        const auto files = selectedFiles();
+        if (files.size() != 1) return;
+        const auto file = files[0];
+        juce::String message = "New name for " + file.getFileName()
+                                 + "  (" + file.getFileExtension() + " is kept)";
+        if (presets::isPresetFile (file))
+            message << "\nThe preset name stored inside the file is not changed.";
+
+        dialog = std::make_unique<juce::AlertWindow> ("Rename", message, juce::MessageBoxIconType::NoIcon, this);
+        dialog->addTextEditor ("name", file.getFileNameWithoutExtension());
+        dialog->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        dialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        dialog->enterModalState (true, juce::ModalCallbackFunction::create (
+            [safe = juce::Component::SafePointer<MainComponent> (this), file] (int result)
+            {
+                if (safe == nullptr) return;
+                const auto name = safe->dialog->getTextEditorContents ("name");
+                safe->dialog->setVisible (false);
+                if (result == 1) safe->applyRename (file, name);
+            }), false);
+        if (auto* editor = dialog->getTextEditor ("name"))
+        {
+            editor->grabKeyboardFocus();
+            editor->selectAll();
+        }
+    }
+
+    void applyRename (const juce::File& file, const juce::String& name)
+    {
+        releasePreview();
+        juce::File renamed;
+        const auto error = fileactions::rename (file, name, renamed);
+        if (error.isNotEmpty()) { warn ("Rename", error); return; }
+        if (renamed.getFileName() == file.getFileName()) return;
+        forget (file);
+        seen.insert (renamed.getFullPathName());
+        items.push_back (library.describe (renamed)); // reads BPM, key and tuning hints in the new name
+        applyFilter ({ renamed });
+    }
+
+    void confirmDelete()
+    {
+        const auto files = selectedFiles();
+        if (files.isEmpty()) return;
+       #if JUCE_WINDOWS
+        const juce::String bin = "Recycle Bin";
+       #else
+        const juce::String bin = "Trash";
+       #endif
+        juce::String message = files.size() == 1 ? "Move " + files[0].getFileName() + " to the " + bin + "?"
+                                                 : "Move these " + juce::String (files.size()) + " files to the " + bin + "?\n";
+        if (files.size() > 1)
+        {
+            for (int i = 0; i < juce::jmin (8, files.size()); ++i) message << "\n" << files[i].getFileName();
+            if (files.size() > 8) message << "\n...and " << files.size() - 8 << " more";
+        }
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withTitle ("Delete").withMessage (message)
+                                          .withButton ("Delete").withButton ("Cancel").withAssociatedComponent (this),
+                                      [safe = juce::Component::SafePointer<MainComponent> (this), files] (int result)
+                                      {
+                                          if (safe != nullptr && result == 1) safe->deleteFiles (files);
+                                      });
+    }
+
+    void deleteFiles (const juce::Array<juce::File>& files)
+    {
+        releasePreview();
+        juce::StringArray failed;
+        for (auto& f : files)
+        {
+            if (fileactions::moveToTrash (f)) forget (f);
+            else failed.add (f.getFileName());
+        }
+        applyFilter();
+        if (! failed.isEmpty())
+            warn ("Delete", "These files were not deleted:\n" + failed.joinIntoString ("\n", 0, 10));
+    }
+
+    juce::String formatSummary()
+    {
+        juce::String text = "Audio files (preview, BPM, key, tuning):\n";
+        for (int i = 0; i < library.formats.getNumKnownFormats(); ++i)
+        {
+            auto* format = library.formats.getKnownFormat (i);
+            auto extensions = format->getFileExtensions();
+            extensions.removeDuplicates (true);
+            text << "  " << format->getFormatName().replace (" file", "") << ":  "
+                 << extensions.joinIntoString (" ") << "\n";
+        }
+        return text + "\nSynth presets (details only, no audio):\n"
+                      "  Serum:  .fxp  .SerumPreset\n"
+                      "  Vital:  .vital\n"
+                      "  VST2:  .fxp  .fxb\n"
+                      "  VST3:  .vstpreset";
     }
 
     void load (const Item& it)
@@ -377,11 +571,12 @@ private:
         return true;
     }
 
-    void applyFilter()
+    // Rebuilds the visible rows, keeping the selection (or selecting the files given).
+    void applyFilter (juce::Array<juce::File> selected = {})
     {
-        juce::File selected;
-        const int row = table.getSelectedRow();
-        if (juce::isPositiveAndBelow (row, (int) visible.size())) selected = items[visible[(size_t) row]].file;
+        if (selected.isEmpty()) selected = selectedFiles();
+        std::set<juce::String> wanted;
+        for (auto& f : selected) wanted.insert (f.getFullPathName());
 
         visible.clear();
         for (size_t i = 0; i < items.size(); ++i)
@@ -404,8 +599,12 @@ private:
         const juce::ScopedValueSetter<bool> guard (refreshing, true);
         table.deselectAllRows();
         table.updateContent();
+        juce::SparseSet<int> rows;
         for (size_t i = 0; i < visible.size(); ++i)
-            if (items[visible[i]].file == selected) { table.selectRow ((int) i, true); break; }
+            if (wanted.count (items[visible[i]].file.getFullPathName()) > 0)
+                rows.addRange ({ (int) i, (int) i + 1 });
+        table.setSelectedRows (rows, juce::dontSendNotification);
+        table.resetAnchor (rows.isEmpty() ? -1 : rows[0]);
         table.repaint();
         updateStatus();
     }
@@ -426,7 +625,7 @@ private:
         if (! found.empty())
         {
             for (auto& it : found)
-                if (seen.insert (it.file.getFullPathName()).second)
+                if (it.file.existsAsFile() && seen.insert (it.file.getFullPathName()).second)
                 {
                     addToTree (it.file);
                     items.push_back (std::move (it));
@@ -440,6 +639,7 @@ private:
 
     void rescan()
     {
+        table.deselectAllRows();
         items.clear();
         visible.clear();
         seen.clear();
@@ -518,10 +718,8 @@ private:
         else if (command == autoCmd) autoPlay.triggerClick();
         else if (command == loopCmd) loop.triggerClick();
         else if (command == aboutCmd)
-            juce::AlertWindow::showAsync (juce::MessageBoxOptions()
-                                              .withTitle ("About")
-                                              .withMessage ("Samplite Explorer " APP_VERSION "\n\n~ marks an estimated BPM, key or tuning.")
-                                              .withButton ("OK"), nullptr);
+            warn ("About", "Samplite Explorer " APP_VERSION "\n\n" + formatSummary()
+                             + "\n\n~ marks an estimated BPM, key or tuning.");
     }
 
     juce::AudioDeviceManager deviceManager;
@@ -551,7 +749,8 @@ private:
     FolderState folderState;
     FolderNode allFolders { folderState, juce::File() };
     juce::TreeView folderTree;
-    juce::TableListBox table;
+    FileTable table;
+    std::unique_ptr<juce::AlertWindow> dialog;
     Preview preview { library.formats, transport };
 };
 

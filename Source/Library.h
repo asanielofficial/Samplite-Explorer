@@ -73,6 +73,12 @@ public:
 
     bool isScanning() const { return isThreadRunning(); }
 
+    // Reads one file now, bypassing the cache. Safe to call while a scan runs.
+    Item describe (const juce::File& file)
+    {
+        return presets::isPresetFile (file) ? readPreset (file) : readSample (file);
+    }
+
 private:
     static constexpr int engineVersion = 2; // bump when detection changes
     struct Cached { juce::String stamp; Item item; };

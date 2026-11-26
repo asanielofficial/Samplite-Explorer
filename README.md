@@ -44,7 +44,7 @@ may warn. On Windows choose More info > Run anyway; on macOS allow it under
 System Settings > Privacy & Security.
 
 To build an installer locally, build in `build/` first, then run `bash installer/linux.sh`,
-`bash installer/macos.sh`, or on Windows `ISCC /DAppVersion=1.1.0 installer\windows.iss`
+`bash installer/macos.sh`, or on Windows `ISCC /DAppVersion=1.2.0 installer\windows.iss`
 (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)). Output goes to `dist/`.
 
 ## Use
@@ -53,6 +53,12 @@ To build an installer locally, build in `build/` first, then run `bash installer
 - The left sidebar shows each added folder as a tree. Select a folder to see everything inside it,
   including subfolders. Folders with no sounds or presets are left out.
 - Click or use the arrow keys to audition; **Space** plays and stops; click the waveform to seek.
+- Select as in Windows Explorer: **Shift** for a range, **Ctrl** (Cmd on macOS) to add or remove single
+  files, **Ctrl+Shift** to add a range, **Ctrl+A** for all.
+- Right-click for **Open**, **Open Containing Folder**, **Rename** and **Delete**. **Enter** opens,
+  **F2** renames, **Delete** moves to the Recycle Bin or Trash (after asking). On Linux the folder opens
+  without the file highlighted.
+- **Help > About** lists the supported file formats.
 - Drag a row out of the window into your DAW, synth or file manager. Files are copied or referenced, never moved.
 - Filter by text, type, BPM range and key. Click column headers to sort, including by tuning.
 

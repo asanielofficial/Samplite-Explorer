@@ -1,5 +1,5 @@
 ; Inno Setup script. Build the app first, then:
-;   ISCC /DAppVersion=1.1.0 installer\windows.iss
+;   ISCC /DAppVersion=1.2.0 installer\windows.iss
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif

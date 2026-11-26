@@ -2,6 +2,7 @@
 #include <cstring>
 #include "../Source/Library.h"
 #include "../Source/Detect.h"
+#include "../Source/FileActions.h"
 
 static int failures = 0;
 static void check (bool ok, const char* what)
@@ -121,6 +122,39 @@ int main()
     check (presets::read (broken).name == "d", "preset: damaged file falls back to filename");
     dir.deleteRecursively();
 
+    {
+        auto folder = juce::File::createTempFile ("rename");
+        folder.createDirectory();
+        auto a = folder.getChildFile ("a.wav"), b = folder.getChildFile ("b.wav");
+        a.replaceWithText ("A");
+        b.replaceWithText ("B");
+        juce::File out;
+        check (fileactions::rename (a, "b", out).isNotEmpty() && b.loadFileAsString() == "B" && a.existsAsFile(),
+               "rename: never overwrites another file");
+        check (fileactions::rename (a, "../x", out).isNotEmpty() && a.existsAsFile(), "rename: no path separators");
+        check (fileactions::rename (a, "  ", out).isNotEmpty(), "rename: empty name refused");
+        check (fileactions::rename (a, "c_v1.2", out).isEmpty() && out.getFileName() == "c_v1.2.wav"
+                   && out.existsAsFile() && ! a.existsAsFile(), "rename: keeps extension");
+        folder.deleteRecursively();
+    }
+   #if JUCE_LINUX
+    {
+        auto home = juce::File::createTempFile ("trash");
+        home.createDirectory();
+        setenv ("XDG_DATA_HOME", home.getFullPathName().toRawUTF8(), 1);
+        auto victim = home.getChildFile ("my song #1.wav");
+        for (auto* expected : { "my song #1.wav", "my song #1 2.wav" })
+        {
+            victim.replaceWithText ("x");
+            check (fileactions::moveToTrash (victim) && ! victim.exists()
+                       && home.getChildFile ("Trash/files").getChildFile (expected).existsAsFile(), "trash: file moved");
+            const auto record = home.getChildFile ("Trash/info").getChildFile (juce::String (expected) + ".trashinfo");
+            std::printf ("%s", record.loadFileAsString().toRawUTF8());
+            check (record.loadFileAsString().contains ("my%20song%20%231.wav"), "trash: restore record written");
+        }
+        home.deleteRecursively();
+    }
+   #endif
     std::printf ("%d failure(s)\n", failures);
     return failures == 0 ? 0 : 1;
 }

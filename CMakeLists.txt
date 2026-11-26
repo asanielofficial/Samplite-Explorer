@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SampliteExplorer VERSION 1.1.0 LANGUAGES C CXX)
+project(SampliteExplorer VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,14 +43,14 @@ juce_add_gui_app(SampliteExplorer
     PRODUCT_NAME "Samplite Explorer"
     COMPANY_NAME "Samplite"
     BUNDLE_ID com.samplite.explorer)
-target_sources(SampliteExplorer PRIVATE Source/Main.cpp Source/Detect.cpp)
+target_sources(SampliteExplorer PRIVATE Source/Main.cpp Source/Detect.cpp Source/FileActions.cpp)
 target_compile_definitions(SampliteExplorer PRIVATE ${COMMON_DEFS} APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(SampliteExplorer
     PRIVATE qmdsp juce::juce_audio_utils juce::juce_dsp
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
 juce_add_console_app(ExplorerTests)
-target_sources(ExplorerTests PRIVATE Tests/Tests.cpp Source/Detect.cpp)
+target_sources(ExplorerTests PRIVATE Tests/Tests.cpp Source/Detect.cpp Source/FileActions.cpp)
 target_compile_definitions(ExplorerTests PRIVATE ${COMMON_DEFS})
 target_link_libraries(ExplorerTests
     PRIVATE qmdsp juce::juce_audio_formats juce::juce_dsp
