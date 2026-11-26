@@ -50,29 +50,37 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Package (Windows)
+      # Each platform builds an installer, then installs it to prove that it works.
+      - name: Installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "build/SampliteExplorer_artefacts/Release/Samplite Explorer.exe" dist/
+          $version = Get-Content build/version.txt
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" installer\windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = (Get-Item dist\*Setup.exe).FullName
+          $target = "$env:RUNNER_TEMP\installed"
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
+          if (-not (Test-Path "$target\Samplite Explorer.exe")) { throw "App was not installed" }
 
-      - name: Package (macOS)
+      - name: Installer (macOS)
         if: runner.os == 'macOS'
         run: |
-          mkdir -p dist
-          app="build/SampliteExplorer_artefacts/Release/Samplite Explorer.app"
-          codesign --force --deep --sign - "$app"
-          ditto -c -k --keepParent "$app" "dist/Samplite-Explorer-macOS.zip"
+          bash installer/macos.sh
+          sudo installer -pkg dist/*.pkg -target /
+          test -x "/Applications/Samplite Explorer.app/Contents/MacOS/Samplite Explorer"
 
-      - name: Package (Linux)
+      - name: Installer (Linux)
         if: runner.os == 'Linux'
         run: |
-          mkdir -p dist
-          tar -czf dist/Samplite-Explorer-Linux.tar.gz -C build/SampliteExplorer_artefacts/Release "Samplite Explorer"
+          bash installer/linux.sh
+          sudo apt-get install -y ./dist/*.deb
+          test -x /usr/bin/samplite-explorer
+          ! ldd /usr/bin/samplite-explorer | grep "not found"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Samplite-Explorer-${{ matrix.name }}
+          name: Samplite-Explorer-Installer-${{ matrix.name }}
           path: dist/
           if-no-files-found: error
